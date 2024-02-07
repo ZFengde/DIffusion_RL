@@ -15,24 +15,9 @@ from stable_baselines3.common.type_aliases import (
 )
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecNormalize
-
-try:
-    # Check memory used by replay buffer when possible
-    import psutil
-except ImportError:
-    psutil = None
+import psutil
 
 class BaseBuffer(ABC):
-    """
-    Base class that represent a buffer (rollout or replay)
-
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device: PyTorch device
-        to which the values will be converted
-    :param n_envs: Number of parallel environments
-    """
 
     observation_space: spaces.Space
     obs_shape: Tuple[int, ...]
@@ -154,24 +139,6 @@ class BaseBuffer(ABC):
 
 
 class ReplayBuffer(BaseBuffer):
-    """
-    Replay buffer used in off-policy algorithms like SAC/TD3.
-
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device: PyTorch device
-    :param n_envs: Number of parallel environments
-    :param optimize_memory_usage: Enable a memory efficient variant
-        of the replay buffer which reduces by almost a factor two the memory used,
-        at a cost of more complexity.
-        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
-        and https://github.com/DLR-RM/stable-baselines3/pull/28#issuecomment-637559274
-        Cannot be used in combination with handle_timeout_termination.
-    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
-        separately and treat the task as infinite horizon task.
-        https://github.com/DLR-RM/stable-baselines3/issues/284
-    """
 
     observations: np.ndarray
     next_observations: np.ndarray
@@ -339,27 +306,6 @@ class ReplayBuffer(BaseBuffer):
 
 
 class RolloutBuffer(BaseBuffer):
-    """
-    Rollout buffer used in on-policy algorithms like A2C/PPO.
-    It corresponds to ``buffer_size`` transitions collected
-    using the current policy.
-    This experience will be discarded after the policy update.
-    In order to use PPO objective, we also store the current value of each state
-    and the log probability of each taken action.
-
-    The term rollout here refers to the model-free notion and should not
-    be used with the concept of rollout used in model-based RL or planning.
-    Hence, it is only involved in policy and value function training but not action selection.
-
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device: PyTorch device
-    :param gae_lambda: Factor for trade-off of bias vs variance for Generalized Advantage Estimator
-        Equivalent to classic advantage when set to 1.
-    :param gamma: Discount factor
-    :param n_envs: Number of parallel environments
-    """
 
     observations: np.ndarray
     actions: np.ndarray
@@ -520,21 +466,6 @@ class RolloutBuffer(BaseBuffer):
 
 
 class DictReplayBuffer(ReplayBuffer):
-    """
-    Dict Replay buffer used in off-policy algorithms like SAC/TD3.
-    Extends the ReplayBuffer to use dictionary observations
-
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device: PyTorch device
-    :param n_envs: Number of parallel environments
-    :param optimize_memory_usage: Enable a memory efficient variant
-        Disabled for now (see https://github.com/DLR-RM/stable-baselines3/pull/243#discussion_r531535702)
-    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
-        separately and treat the task as infinite horizon task.
-        https://github.com/DLR-RM/stable-baselines3/issues/284
-    """
 
     observation_space: spaces.Dict
     obs_shape: Dict[str, Tuple[int, ...]]  # type: ignore[assignment]
@@ -692,29 +623,6 @@ class DictReplayBuffer(ReplayBuffer):
 
 
 class DictRolloutBuffer(RolloutBuffer):
-    """
-    Dict Rollout buffer used in on-policy algorithms like A2C/PPO.
-    Extends the RolloutBuffer to use dictionary observations
-
-    It corresponds to ``buffer_size`` transitions collected
-    using the current policy.
-    This experience will be discarded after the policy update.
-    In order to use PPO objective, we also store the current value of each state
-    and the log probability of each taken action.
-
-    The term rollout here refers to the model-free notion and should not
-    be used with the concept of rollout used in model-based RL or planning.
-    Hence, it is only involved in policy and value function training but not action selection.
-
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device: PyTorch device
-    :param gae_lambda: Factor for trade-off of bias vs variance for Generalized Advantage Estimator
-        Equivalent to Monte-Carlo advantage estimate when set to 1.
-    :param gamma: Discount factor
-    :param n_envs: Number of parallel environments
-    """
 
     observation_space: spaces.Dict
     obs_shape: Dict[str, Tuple[int, ...]]  # type: ignore[assignment]

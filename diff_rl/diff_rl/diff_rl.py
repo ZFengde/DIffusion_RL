@@ -1,21 +1,24 @@
 import warnings
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
 
 import numpy as np
 import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
+from diff_rl.common.buffers import RolloutBuffer
 from diff_rl.common.on_policy_algorithm import OnPolicyAlgorithm
-from diff_rl.common.policies import BasePolicy, ActorCriticPolicy
+from diff_rl.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
 
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import explained_variance, get_schedule_fn, safe_mean
+from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
 class Diffusion_RL(OnPolicyAlgorithm):
-
-    policy_aliases: Dict[str, Type[BasePolicy]] = {
+    
+    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
         "MlpPolicy": ActorCriticPolicy,
+        "CnnPolicy": ActorCriticCnnPolicy,
+        "MultiInputPolicy": MultiInputActorCriticPolicy,
     }
 
     def __init__(
@@ -23,32 +26,30 @@ class Diffusion_RL(OnPolicyAlgorithm):
         policy: Union[str, Type[ActorCriticPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
-        n_steps: int = 20480,
-        batch_size: int = 20480,
-        n_epochs: int = 80,
+        n_steps: int = 2048,
+        batch_size: int = 64,
+        n_epochs: int = 10,
         gamma: float = 0.99,
-        gae_lambda: float = 0.97,
+        gae_lambda: float = 0.95,
         clip_range: Union[float, Schedule] = 0.2,
         clip_range_vf: Union[None, float, Schedule] = None,
         normalize_advantage: bool = True,
         ent_coef: float = 0.0,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
-        net_arch_dim: int = 64,
-        obstacle_num: int = 5,
         use_sde: bool = False,
         sde_sample_freq: int = -1,
+        rollout_buffer_class: Optional[Type[RolloutBuffer]] = None,
+        rollout_buffer_kwargs: Optional[Dict[str, Any]] = None,
         target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
-        create_eval_env: bool = False,
         policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
-        gnn_type: str = None,
         _init_setup_model: bool = True,
     ):
-
         super().__init__(
             policy,
             env,
@@ -59,17 +60,16 @@ class Diffusion_RL(OnPolicyAlgorithm):
             ent_coef=ent_coef,
             vf_coef=vf_coef,
             max_grad_norm=max_grad_norm,
-            net_arch_dim=net_arch_dim,
-            obstacle_num=obstacle_num,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            rollout_buffer_class=rollout_buffer_class,
+            rollout_buffer_kwargs=rollout_buffer_kwargs,
+            stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
             verbose=verbose,
             device=device,
-            create_eval_env=create_eval_env,
             seed=seed,
-            gnn_type=gnn_type,
             _init_setup_model=False,
             supported_action_spaces=(
                 spaces.Box,
@@ -90,8 +90,8 @@ class Diffusion_RL(OnPolicyAlgorithm):
             # Check that `n_steps * n_envs > 1` to avoid NaN
             # when doing advantage normalization
             buffer_size = self.env.num_envs * self.n_steps
-            assert (
-                buffer_size > 1
+            assert buffer_size > 1 or (
+                not normalize_advantage
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
             # Check that the rollout buffer size is a multiple of the mini-batch size
             untruncated_batches = buffer_size // batch_size
@@ -110,8 +110,6 @@ class Diffusion_RL(OnPolicyAlgorithm):
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
         self.target_kl = target_kl
-        self.net_arch_dim = net_arch_dim
-        self.obstacle_num = obstacle_num
 
         if _init_setup_model:
             self._setup_model()
@@ -124,6 +122,7 @@ class Diffusion_RL(OnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             if isinstance(self.clip_range_vf, (float, int)):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
+
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
     def train(self) -> None:
@@ -135,26 +134,21 @@ class Diffusion_RL(OnPolicyAlgorithm):
         # Update optimizer learning rate
         self._update_learning_rate(self.policy.optimizer)
         # Compute current clip range
-        clip_range = self.clip_range(self._current_progress_remaining)
+        clip_range = self.clip_range(self._current_progress_remaining)  # type: ignore[operator]
         # Optional: clip range for the value function
         if self.clip_range_vf is not None:
-            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)  # type: ignore[operator]
 
-        # Only for logger
-        losses = []
         entropy_losses = []
         pg_losses, value_losses = [], []
         clip_fractions = []
 
         continue_training = True
-
-        # train for n_epochs epochs, i.e., use the data in buffer n_epochs times
+        # train for n_epochs epochs
         for epoch in range(self.n_epochs):
-            update_per_epoch = 0
             approx_kl_divs = []
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
-
                 actions = rollout_data.actions
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
@@ -166,25 +160,21 @@ class Diffusion_RL(OnPolicyAlgorithm):
 
                 values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
                 values = values.flatten()
-                
                 # Normalize advantage
                 advantages = rollout_data.advantages
-
-                # test different normalize method
-                if self.normalize_advantage:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # so this is the normalize method that make mean to 0, while max of the advantaged value could be large
+                # Normalization does not make sense if mini batchsize == 1, see GH issue #325
+                if self.normalize_advantage and len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
 
-                # clipped surrogate loss, here is using 
+                # clipped surrogate loss
                 policy_loss_1 = advantages * ratio
                 policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                
-                # surr_adv is very small while 
-                surr_adv = th.min(policy_loss_1, policy_loss_2).mean()
-                policy_loss = - surr_adv # Has Nothing to do with value function
+                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
 
+                # Logging
                 pg_losses.append(policy_loss.item())
                 clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
                 clip_fractions.append(clip_fraction)
@@ -193,10 +183,11 @@ class Diffusion_RL(OnPolicyAlgorithm):
                     # No clipping
                     values_pred = values
                 else:
+                    # Clip the difference between old and new value
+                    # NOTE: this depends on the reward scaling
                     values_pred = rollout_data.old_values + th.clamp(
                         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                     )
-                
                 # Value loss using the TD(gae_lambda) target
                 value_loss = F.mse_loss(rollout_data.returns, values_pred)
                 value_losses.append(value_loss.item())
@@ -210,10 +201,13 @@ class Diffusion_RL(OnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = policy_loss + self.vf_coef * value_loss
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
+                # Calculate approximate form of reverse KL Divergence for early stopping
+                # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
+                # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
+                # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with th.no_grad():
-                    # calculate the kl divergence between current policy and old policy
                     log_ratio = log_prob - rollout_data.old_log_prob
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs.append(approx_kl_div)
@@ -223,20 +217,18 @@ class Diffusion_RL(OnPolicyAlgorithm):
                     if self.verbose >= 1:
                         print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                     break
-                
-                losses.append(loss.item())
+
                 # Optimization step
                 self.policy.optimizer.zero_grad()
                 loss.backward()
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
-                update_per_epoch += 1
 
+            self._n_updates += 1
             if not continue_training:
                 break
 
-        self._n_updates += self.n_epochs * update_per_epoch
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
         # Logs
@@ -245,7 +237,7 @@ class Diffusion_RL(OnPolicyAlgorithm):
         self.logger.record("train/value_loss", np.mean(value_losses))
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record("train/loss", np.mean(losses))
+        self.logger.record("train/loss", loss.item())
         self.logger.record("train/explained_variance", explained_var)
         if hasattr(self.policy, "log_std"):
             self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
@@ -254,50 +246,21 @@ class Diffusion_RL(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        self.logger.dump(step=self.num_timesteps)
 
     def learn(
         self,
-        total_timesteps: int = None,
+        total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
-        eval_env: Optional[GymEnv] = None,
-        eval_freq: int = -1,
-        n_eval_episodes: int = 5,
-        tb_log_name: str = "Diffusion_RL",
-        eval_log_path: Optional[str] = None,
+        tb_log_name: str = "PPO",
         reset_num_timesteps: bool = True,
-    ) -> "Diffusion_RL":
-
+        progress_bar: bool = False,
+    ):
         return super().learn(
-            total_timesteps=self.env.num_envs * self.n_steps,
+            total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
-            eval_env=eval_env,
-            eval_freq=eval_freq,
-            n_eval_episodes=n_eval_episodes,
             tb_log_name=tb_log_name,
-            eval_log_path=eval_log_path,
             reset_num_timesteps=reset_num_timesteps,
+            progress_bar=progress_bar,
         )
-
-    def test(self, env):
-        
-        while True:
-            obs = env.reset()
-            ep_reward = 0
-            ep_len = 0
-            while True:
-                env.render()
-                with th.no_grad():
-                    action = self.policy.predict(obs)[0]
-
-                # clipped_action = action
-                clipped_action = np.clip(action, -1, 1)
-                obs, reward, done, info = env.step(clipped_action)
-
-                ep_reward += reward
-                ep_len += 1
-                if done:
-                    print(ep_len, ep_reward)
-                    break
