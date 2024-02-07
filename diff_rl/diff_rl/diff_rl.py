@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union
+from typing import Any, Dict, Optional, Type, Union
 
 import numpy as np
 import torch as th
@@ -8,23 +8,17 @@ from torch.nn import functional as F
 
 from diff_rl.common.buffers import RolloutBuffer
 from diff_rl.common.on_policy_algorithm import OnPolicyAlgorithm
-from diff_rl.common.policies import ActorCriticCnnPolicy, ActorCriticPolicy, BasePolicy, MultiInputActorCriticPolicy
+from diff_rl.common.policies import ActorCriticPolicy
 
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
 class Diffusion_RL(OnPolicyAlgorithm):
     
-    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
-        "MlpPolicy": ActorCriticPolicy,
-        "CnnPolicy": ActorCriticCnnPolicy,
-        "MultiInputPolicy": MultiInputActorCriticPolicy,
-    }
-
     def __init__(
         self,
-        policy: Union[str, Type[ActorCriticPolicy]],
         env: Union[GymEnv, str],
+        policy: Union[str, Type[ActorCriticPolicy]] = ActorCriticPolicy,
         learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
