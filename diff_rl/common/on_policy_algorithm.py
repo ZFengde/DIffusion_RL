@@ -1,6 +1,7 @@
+import os
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import torch as th
@@ -31,7 +32,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         ent_coef: float,
         vf_coef: float,
         max_grad_norm: float,
-        use_sde: bool,
         sde_sample_freq: int,
         rollout_buffer_class: Optional[Type[RolloutBuffer]] = None,
         rollout_buffer_kwargs: Optional[Dict[str, Any]] = None,
@@ -52,7 +52,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             policy_kwargs=policy_kwargs,
             verbose=verbose,
             device=device,
-            use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
             support_multi_env=True,
             seed=seed,
@@ -73,7 +72,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         if _init_setup_model:
             self._setup_model()
 
-    def _setup_model(self) -> None:
+    def _setup_model(self):
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
@@ -94,7 +93,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             **self.rollout_buffer_kwargs,
         )
         self.policy = self.policy_class(  # type: ignore[assignment]
-            self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
+            self.observation_space, self.action_space, self.lr_schedule, **self.policy_kwargs
         )
         self.policy = self.policy.to(self.device)
 
@@ -104,55 +103,26 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback: BaseCallback,
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
-    ) -> bool:
-        """
-        Collect experiences using the current policy and fill a ``RolloutBuffer``.
-        The term rollout here refers to the model-free notion and should not
-        be used with the concept of rollout used in model-based RL or planning.
-
-        :param env: The training environment
-        :param callback: Callback that will be called at each step
-            (and at the beginning and end of the rollout)
-        :param rollout_buffer: Buffer to fill with rollouts
-        :param n_rollout_steps: Number of experiences to collect per environment
-        :return: True if function returned with at least `n_rollout_steps`
-            collected, False if callback terminated rollout prematurely.
-        """
+    ):
+        
         assert self._last_obs is not None, "No previous observation was provided"
-        # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
-
         n_steps = 0
         rollout_buffer.reset()
-        # Sample new weights for the state dependent exploration
-        if self.use_sde:
-            self.policy.reset_noise(env.num_envs)
-
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
-                self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy(obs_tensor)
+                actions, q_values = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
             clipped_actions = actions
-
             if isinstance(self.action_space, spaces.Box):
-                if self.policy.squash_output:
-                    # Unscale the actions to match env bounds
-                    # if they were previously squashed (scaled in [-1, 1])
-                    clipped_actions = self.policy.unscale_action(clipped_actions)
-                else:
-                    # Otherwise, clip the actions to avoid out of bound error
-                    # as we are sampling from an unbounded Gaussian distribution
-                    clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
@@ -167,11 +137,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
-                # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
 
-            # Handle timeout by bootstraping with value function
-            # see GitHub issue #633
+            # TODO, need to modify the terminal calculation cuz we don't have V(s) here
             for idx, done in enumerate(dones):
                 if (
                     done
@@ -180,37 +148,29 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 ):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs)[0]  # type: ignore[arg-type]
-                    rewards[idx] += self.gamma * terminal_value
+                        _, terminal_q_value = self.policy(terminal_obs)[0]
+                    rewards[idx] += self.gamma * terminal_q_value
 
             rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
+                self._last_obs,  
                 actions,
                 rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
-                values,
-                log_probs,
+                self._last_episode_starts, 
+                q_values,
             )
-            self._last_obs = new_obs  # type: ignore[assignment]
+            self._last_obs = new_obs
             self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+            q_values = self.policy(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
-
-        callback.update_locals(locals())
-
+        rollout_buffer.compute_returns_and_advantage(last_q_values=q_values, dones=dones)
         callback.on_rollout_end()
 
         return True
 
-    def train(self) -> None:
-        """
-        Consume current rollout data and update policy parameters.
-        Implemented by individual algorithms.
-        """
+    def train(self):
         raise NotImplementedError
 
     def learn(
@@ -269,3 +229,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         state_dicts = ["policy", "policy.optimizer"]
 
         return state_dicts, []
+    
+    def save(self, models_dir, training_step):
+            if not os.path.exists(models_dir):
+                os.makedirs(models_dir)
+                print(f'logging to {models_dir}/{training_step}')
+            th.save(self.policy.state_dict(), f'{models_dir}/{training_step}') 
+
+    def load(self, path):
+        self.policy.load_state_dict(th.load(path))
