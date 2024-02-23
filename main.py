@@ -1,8 +1,6 @@
 import diff_rl
-
 import os
 import time
-from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 
 def main(
@@ -65,7 +63,7 @@ def main(
 	else:
 		env_kwargs = None
 
-	env = make_vec_env(env_id, n_envs=n_envs, vec_env_cls=SubprocVecEnv, env_kwargs=env_kwargs)
+	env = make_vec_env(env_id, n_envs=n_envs, env_kwargs=env_kwargs)
 	# make experiment directory
 	logdir = f"{env_id}+n_obstalces={obstacle_num}/{log_name+str(indicator)}/logs/{int(time.time())}/"
 	modeldir = f"{env_id}+n_obstalces={obstacle_num}/{log_name+str(indicator)}/models/{int(time.time())}/"

@@ -106,17 +106,16 @@ class OnPolicyAlgorithm(BaseAlgorithm):
     ):
         
         assert self._last_obs is not None, "No previous observation was provided"
-        self.policy.set_training_mode(False)
         n_steps = 0
         rollout_buffer.reset()
         callback.on_rollout_start()
 
-        while n_steps < n_rollout_steps:
+        while n_steps < n_rollout_steps: # total number of interaction steps
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, q_values = self.policy(obs_tensor)
+                actions, probs, qvalue_finals = self.policy(obs_tensor) # Q(a)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
@@ -127,7 +126,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             self.num_timesteps += env.num_envs
-
             # Give access to local variables
             callback.update_locals(locals())
             if not callback.on_step():

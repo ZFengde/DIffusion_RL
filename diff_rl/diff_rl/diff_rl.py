@@ -26,8 +26,6 @@ class Diffusion_RL(OnPolicyAlgorithm):
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         normalize_advantage: bool = True,
-        ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         rollout_buffer_class: Optional[Type[RolloutBuffer]] = None,
         rollout_buffer_kwargs: Optional[Dict[str, Any]] = None,
@@ -47,7 +45,6 @@ class Diffusion_RL(OnPolicyAlgorithm):
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
-            ent_coef=ent_coef,
             max_grad_norm=max_grad_norm,
             rollout_buffer_class=rollout_buffer_class,
             rollout_buffer_kwargs=rollout_buffer_kwargs,
@@ -103,57 +100,43 @@ class Diffusion_RL(OnPolicyAlgorithm):
         super()._setup_model()
 
     def train(self) -> None:
-        """
-        Update policy using the currently gathered rollout buffer.
-        """
-        # Switch to train mode (this affects batch norm / dropout)
+
         self.policy.set_training_mode(True)
-        # Update optimizer learning rate
         self._update_learning_rate(self.policy.optimizer)
-
-        entropy_losses = []
-        pg_losses, value_losses = [], []
-
+        pg_losses = []
         continue_training = True
+        
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
-            approx_kl_divs = []
-            # Do a complete pass on the rollout buffer
+
             for rollout_data in self.rollout_buffer.get(self.batch_size):
                 actions = rollout_data.actions
                 if isinstance(self.action_space, spaces.Discrete):
-                    # Convert discrete action from float to long
                     actions = rollout_data.actions.long().flatten()
 
-                # TODO, here is to calculate the loss function
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                # TODO, here is to calculate the loss function, need to be modified
+                chosen_action, qvalue_final = self.policy(rollout_data.observations)
+
+                # For Q_value network:
+                # TD_error = r + p(s', a') * Q(s', a') - R | equals to R - V
+
+                # For diffusion policy: take the optimal action as the ground truth
+                # loss = 
+
                 values = values.flatten()
+
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                # ratio between old and new policy, should be one at the first iteration
-                ratio = th.exp(log_prob - rollout_data.old_log_prob)
 
                 # clipped surrogate loss
-                policy_loss = advantages * ratio
+                policy_loss = advantages
 
                 # Logging
                 pg_losses.append(policy_loss.item())
-
-                value_loss = F.mse_loss(rollout_data.returns)
-                value_losses.append(value_loss.item())
-
-                # Entropy loss favor exploration
-                if entropy is None:
-                    # Approximate entropy when no analytical form
-                    entropy_loss = -th.mean(-log_prob)
-                else:
-                    entropy_loss = -th.mean(entropy)
-
-                entropy_losses.append(entropy_loss.item())
 
                 loss = policy_loss
 
