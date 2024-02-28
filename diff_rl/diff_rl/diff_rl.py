@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 from diff_rl.common.buffers import RolloutBuffer
 from diff_rl.common.on_policy_algorithm import OnPolicyAlgorithm
-from diff_rl.common.policies import ActorCriticPolicy
+from diff_rl.common.policies import Diffusion_ActorCriticPolicy
 
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
@@ -18,7 +18,7 @@ class Diffusion_RL(OnPolicyAlgorithm):
     def __init__(
         self,
         env: Union[GymEnv, str],
-        policy: Union[str, Type[ActorCriticPolicy]] = ActorCriticPolicy,
+        policy: Union[str, Type[Diffusion_ActorCriticPolicy]] = Diffusion_ActorCriticPolicy,
         learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
@@ -55,12 +55,6 @@ class Diffusion_RL(OnPolicyAlgorithm):
             device=device,
             seed=seed,
             _init_setup_model=False,
-            supported_action_spaces=(
-                spaces.Box,
-                spaces.Discrete,
-                spaces.MultiDiscrete,
-                spaces.MultiBinary,
-            ),
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -101,44 +95,44 @@ class Diffusion_RL(OnPolicyAlgorithm):
 
     def train(self) -> None:
 
-        self.policy.set_training_mode(True)
+        self.policy.train(True)
         self._update_learning_rate(self.policy.optimizer)
         pg_losses = []
+        q_value_losses = []
         continue_training = True
         
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
-
+            
             for rollout_data in self.rollout_buffer.get(self.batch_size):
-                actions = rollout_data.actions
+                actions = rollout_data.actions # actions is the selected_action
                 if isinstance(self.action_space, spaces.Discrete):
                     actions = rollout_data.actions.long().flatten()
 
-                # TODO, here is to calculate the loss function, need to be modified
-                chosen_action, qvalue_final = self.policy(rollout_data.observations)
+                states = rollout_data.observations
+                q_values_pred = self.policy.q_value_evaluation(states, actions)
 
-                # For Q_value network:
-                # TD_error = r + p(s', a') * Q(s', a') - R | equals to R - V
+                # TODO，for diffusion model, the loss should be the distance between the optimal actions and all other actions
+                # difference between current optimal actions and reconstruction
+                # could introduce probability later
+                # actions are single but self.policy.diffusion_policy(states) is multi-actions    
+                actions = actions.unsqueeze(1).expand(-1, self.policy.n_actions, -1)
 
+                # TODO, the loss function is the difference of action itself it's a bit weird
+                # TODO, should we take the currect optimal action as the optimal action?
+                pg_loss = F.mse_loss(actions, self.policy.diffusion_policy(states))
+
+                # TODO, for Q_value network, the loss should be the distance between 
+                # TD_target = r + p(s', a') * Q(s', a') - R | equals to R - V
+                rewards = rollout_data.rewards
+                q_value_loss = F.mse_loss(rollout_data.returns, q_values_pred.squeeze() + rewards)
                 # For diffusion policy: take the optimal action as the ground truth
-                # loss = 
-
-                values = values.flatten()
-
-                # Normalize advantage
-                advantages = rollout_data.advantages
-                # Normalization does not make sense if mini batchsize == 1, see GH issue #325
-                if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-
-                # clipped surrogate loss
-                policy_loss = advantages
 
                 # Logging
-                pg_losses.append(policy_loss.item())
+                pg_losses.append(pg_loss.item())
+                q_value_losses.append(q_value_loss.item())
 
-                loss = policy_loss
+                loss = pg_loss + q_value_loss
 
                 self.policy.optimizer.zero_grad()
                 loss.backward()
@@ -159,7 +153,7 @@ class Diffusion_RL(OnPolicyAlgorithm):
 
     def learn(
         self,
-        total_timesteps: int,
+        total_timesteps: int = None,
         callback: MaybeCallback = None,
         log_interval: int = 1,
         tb_log_name: str = "Diffusion_RL",
@@ -167,7 +161,7 @@ class Diffusion_RL(OnPolicyAlgorithm):
         progress_bar: bool = False,
     ):
         return super().learn(
-            total_timesteps=total_timesteps,
+            total_timesteps=self.n_envs * self.n_steps,
             callback=callback,
             log_interval=log_interval,
             tb_log_name=tb_log_name,

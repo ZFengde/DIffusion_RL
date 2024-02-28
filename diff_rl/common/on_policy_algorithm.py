@@ -7,8 +7,8 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 
-from diff_rl.common.policies import ActorCriticPolicy
-from diff_rl.common.buffers import DictRolloutBuffer, RolloutBuffer
+from diff_rl.common.policies import Diffusion_ActorCriticPolicy
+from diff_rl.common.buffers import RolloutBuffer
 
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback
@@ -19,20 +19,17 @@ from stable_baselines3.common.vec_env import VecEnv
 class OnPolicyAlgorithm(BaseAlgorithm):
 
     rollout_buffer: RolloutBuffer
-    policy: ActorCriticPolicy
+    policy: Diffusion_ActorCriticPolicy
 
     def __init__(
         self,
-        policy: Union[str, Type[ActorCriticPolicy]],
+        policy: Union[str, Type[Diffusion_ActorCriticPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule],
         n_steps: int,
         gamma: float,
         gae_lambda: float,
-        ent_coef: float,
-        vf_coef: float,
         max_grad_norm: float,
-        sde_sample_freq: int,
         rollout_buffer_class: Optional[Type[RolloutBuffer]] = None,
         rollout_buffer_kwargs: Optional[Dict[str, Any]] = None,
         stats_window_size: int = 100,
@@ -43,7 +40,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
-        supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
     ):
         super().__init__(
             policy=policy,
@@ -52,20 +48,15 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             policy_kwargs=policy_kwargs,
             verbose=verbose,
             device=device,
-            sde_sample_freq=sde_sample_freq,
             support_multi_env=True,
             seed=seed,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
-            supported_action_spaces=supported_action_spaces,
         )
-
+        self.max_grad_norm = max_grad_norm
         self.n_steps = n_steps
         self.gamma = gamma
         self.gae_lambda = gae_lambda
-        self.ent_coef = ent_coef
-        self.vf_coef = vf_coef
-        self.max_grad_norm = max_grad_norm
         self.rollout_buffer_class = rollout_buffer_class
         self.rollout_buffer_kwargs = rollout_buffer_kwargs or {}
 
@@ -77,10 +68,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.set_random_seed(self.seed)
 
         if self.rollout_buffer_class is None:
-            if isinstance(self.observation_space, spaces.Dict):
-                self.rollout_buffer_class = DictRolloutBuffer
-            else:
-                self.rollout_buffer_class = RolloutBuffer
+            # if isinstance(self.observation_space, spaces.Dict):
+                # self.rollout_buffer_class = DictRolloutBuffer
+            # else:
+            self.rollout_buffer_class = RolloutBuffer
 
         self.rollout_buffer = self.rollout_buffer_class(
             self.n_steps,
@@ -92,9 +83,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             n_envs=self.n_envs,
             **self.rollout_buffer_kwargs,
         )
-        self.policy = self.policy_class(  # type: ignore[assignment]
-            self.observation_space, self.action_space, self.lr_schedule, **self.policy_kwargs
-        )
+        self.policy = self.policy_class(env=self.env)
         self.policy = self.policy.to(self.device)
 
     def collect_rollouts(
@@ -115,7 +104,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, probs, qvalue_finals = self.policy(obs_tensor) # Q(a)
+                # actions here are selected actions for all parallel envs
+                # values here is the estimation V(s) for all possible 
+                actions, all_actions, values = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
@@ -137,33 +128,32 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if isinstance(self.action_space, spaces.Discrete):
                 actions = actions.reshape(-1, 1)
 
-            # TODO, need to modify the terminal calculation cuz we don't have V(s) here
             for idx, done in enumerate(dones):
                 if (
                     done
                     and infos[idx].get("terminal_observation") is not None
                     and infos[idx].get("TimeLimit.truncated", False)
                 ):
-                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    terminal_obs = obs_as_tensor(infos[idx]["terminal_observation"], self.device).unsqueeze(0)
                     with th.no_grad():
-                        _, terminal_q_value = self.policy(terminal_obs)[0]
-                    rewards[idx] += self.gamma * terminal_q_value
+                        terminal_value = self.policy.value_estimation(terminal_obs)[0]
+                    rewards[idx] += self.gamma * terminal_value
 
             rollout_buffer.add(
-                self._last_obs,  
-                actions,
-                rewards,
-                self._last_episode_starts, 
-                q_values,
+                self._last_obs,  # s
+                actions, # a
+                rewards, # r
+                self._last_episode_starts,  
+                values # v
             )
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
         with th.no_grad():
-            # Compute value for the last timestep
-            q_values = self.policy(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+            # Compute values for the last timestep
+            values = self.policy.value_estimation(obs_as_tensor(new_obs, self.device))
 
-        rollout_buffer.compute_returns_and_advantage(last_q_values=q_values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
         callback.on_rollout_end()
 
         return True

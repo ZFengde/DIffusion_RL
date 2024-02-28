@@ -70,17 +70,18 @@ class Networks(nn.Module): # This network is for generating x_t-1 or epsilon_the
         '''
 
         t_embed = self.time_mlp(time).unsqueeze(1).expand(-1, self.n_actions, -1) # time embedding
-        x = th.cat([action, t_embed, state], dim=-1) # action = 6, 100, 1
+        x = th.cat([action, t_embed, state], dim=-1).float() # action = 6, 100, 1
         action = self.mid_layer(x)
 
         return self.final_layer(action)
 
 class Diffusion_Policy(nn.Module): # forward method here is generate a sample
+
     def __init__(self, 
                  env, 
                  model,
                  n_actions,
-                 n_timesteps=100):
+                 n_timesteps=10):
         super(Diffusion_Policy, self).__init__()
 
         self.env = env
@@ -122,9 +123,6 @@ class Diffusion_Policy(nn.Module): # forward method here is generate a sample
                              betas * np.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod)) # 
         self.register_buffer('posterior_mean_coef2',
                              (1. - alphas_cumprod_prev) * np.sqrt(alphas) / (1. - alphas_cumprod))
-
-        # Loss function, TODO
-        self.loss_fn = 1
 
     # ------------------------------------------ sampling ------------------------------------------#
 
@@ -221,11 +219,12 @@ class Diffusion_Policy(nn.Module): # forward method here is generate a sample
         t = th.randint(0, self.n_timesteps, (batch_size,), device=x.device).long()
         return self.p_losses(x, state, t, weights)
 
-    def forward(self, state):
+    def forward(self, state): 
         state = state.unsqueeze(1).expand(-1, self.n_actions, -1)
         return self.sample(state) # here is the action
 
 class Q_networks(nn.Module):
+    
     def __init__(self, env, n_actions, hidden_dim=256):
         super(Q_networks, self).__init__()
 
@@ -255,19 +254,19 @@ class Q_networks(nn.Module):
                                       nn.Mish(),
                                       nn.Linear(hidden_dim, 1))
 
-    def forward(self, state, action):
+    def multi_q_min(self, state, action): # 64, 100, 27 | 64, 7
         state = state.unsqueeze(1).expand(-1, self.n_actions, -1)
-        x = th.cat([state, action], dim=-1)
-        return self.q1_model(x), self.q2_model(x)
+        x = th.cat([state, action], dim=-1).float()
+        return th.min(self.q1_model(x), self.q2_model(x))
 
-    def q1(self, state, action):
+    def q1(self, state, action): # multi-actions here
         state = state.unsqueeze(1).expand(-1, self.n_actions, -1)
-        x = th.cat([state, action], dim=-1)
+        x = th.cat([state, action], dim=-1).float()
         return self.q1_model(x)
 
-    def q_min(self, state, action):
-        q1, q2 = self.forward(state, action)
-        return th.min(q1, q2)
+    def sinlge_q_min(self, state, action): # 
+        x = th.cat([state, action], dim=-1).float()
+        return th.min(self.q1_model(x), self.q2_model(x))
 
 def select_action(actions, q_values):
     action_index = th.argmax(q_values, dim=1).squeeze()
