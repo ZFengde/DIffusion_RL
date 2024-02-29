@@ -44,12 +44,12 @@ def main(
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_id', type=str, default='Humanoid-v4') # 'Turtlebot-v2''Safexp-PointGoal1-v0'
+    parser.add_argument('--env_id', type=str, default='Ant-v4') # 'Turtlebot-v2''Safexp-PointGoal1-v0'
     parser.add_argument('--algo', type=str, default='Diffusion_RL') 
     parser.add_argument('--policy_type', type=str, default='MlpPolicy')
     parser.add_argument('--n_envs', type=int, default=4)
     parser.add_argument('--iter_num', type=int, default=700) # Total_timestep = iter_num * n_envs * n_steps, here is 2000 * 4 * 20480 = 1.2e7
-    parser.add_argument('--seed', type=int, default=30)
+    parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--early_stop', action='store_true') # if no action, or said default if False, otherwise it's True
     args = parser.parse_args()
 
