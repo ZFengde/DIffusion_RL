@@ -83,8 +83,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             n_envs=self.n_envs,
             **self.rollout_buffer_kwargs,
         )
-        self.policy = self.policy_class(env=self.env)
-        self.policy = self.policy.to(self.device)
+        self.policy = self.policy_class(env=self.env).to(self.device)
 
     def collect_rollouts(
         self,

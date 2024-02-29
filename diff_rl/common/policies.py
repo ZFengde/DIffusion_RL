@@ -21,6 +21,9 @@ class Diffusion_ActorCriticPolicy(nn.Module):
 
         self.n_actions = n_actions
         self.env = env
+        self.register_buffer('action_high', th.tensor(self.env.action_space.high))
+        self.register_buffer('action_low', th.tensor(self.env.action_space.low))
+
         self.activation_fn = activation_fn
         self.n_critics = n_critics
 
@@ -41,16 +44,16 @@ class Diffusion_ActorCriticPolicy(nn.Module):
     def forward(self, state): # Multi-actions here, the value output is an expectation for all actions
         all_actions = self.diffusion_policy(state)
         if isinstance(self.env.action_space, spaces.Box):
-            clipped_all_actions = np.clip(all_actions, self.env.action_space.low, self.env.action_space.high)
+            clipped_all_actions = th.clip(all_actions, self.action_low, self.action_high)
 
         # TODO, try to invlove with probability
-        values = self.q_networks.multi_q_min(state, clipped_all_actions).mean(dim=1) # q_values w.r.t each env-state: n_actions and take mean
+        q_values = self.q_networks.multi_q_min(state, clipped_all_actions) # q_values w.r.t each env-state: n_actions and take mean
         # TODO, change values to q_values here, check why values work
-        selected_actions = select_action(clipped_all_actions, values)
-
+        selected_actions = select_action(clipped_all_actions, q_values)
+        values = q_values.mean(dim=1)
         # selected_actions: actions from all possible actions but with maxium q-value
-        # actions: different actions generated with different gaussian noise
-        # values: weighted average of q-values w.r.t. all possible actions
+        # actions: different actions generated w
+        # q-values w.r.t. all possible actions
         return selected_actions, clipped_all_actions, values
     
     def value_estimation(self, state): # Multi-actions here, this is for estimating values for a given states, Q(s', a'), should be an average

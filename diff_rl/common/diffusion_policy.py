@@ -269,7 +269,7 @@ class Q_networks(nn.Module):
         x = th.cat([state, action], dim=-1).float()
         return th.min(self.q1_model(x), self.q2_model(x))
 
-def select_action(actions, q_values):
+def select_action(actions, q_values): # 4, 100, 8 | 4, 100, 1
     action_index = th.argmax(q_values, dim=1).squeeze()
     selected_actions =  th.stack([actions[i, idx, :] for i, idx in enumerate(action_index)], dim=0).cpu().detach()
     
