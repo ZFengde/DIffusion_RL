@@ -109,30 +109,41 @@ class Diffusion_RL(OnPolicyAlgorithm):
                 if isinstance(self.action_space, spaces.Discrete):
                     actions = rollout_data.actions.long().flatten()
 
-                states = rollout_data.observations
-                q_values_pred = self.policy.q_value_evaluation(states, actions)
+                states = rollout_data.observations # s
+                next_states = rollout_data.next_observations # s'
+                next_values_pred = self.policy.value_estimation(next_states) # V(s')
+                actions = actions.unsqueeze(1).expand(-1, self.policy.n_actions, -1) # a
 
                 # TODO，for diffusion model, the loss should be the distance between the optimal actions and all other actions
                 # difference between current optimal actions and reconstruction
                 # could introduce probability later
                 # actions are single but self.policy.diffusion_policy(states) is multi-actions    
-                actions = actions.unsqueeze(1).expand(-1, self.policy.n_actions, -1)
 
                 # TODO, the loss function is the difference of action itself it's a bit weird
                 # TODO, should we take the currect optimal action as the optimal action?
-                pg_loss = F.mse_loss(actions, self.policy.diffusion_policy(states))
+                # TODO, or make it as standard diffusion loss, i.e., loss w.r.t reconstruction
+                # actions here are the actions from rollout, which shouldn't be the target actions
+                # For diffusion policy: take the optimal action as the ground truth
+                # TODO, change pg_loss to advantage w.r.t current state and all actions
+                # TODO, this loss only related to diffusion network
+                pg_loss = F.mse_loss(actions, self.policy.diffusion_policy(states)) # Only this part has to do with policy
 
                 # TODO, for Q_value network, the loss should be the distance between 
+                # This loss w.r.t. both diffusion and policy network
                 # TD_target = r + p(s', a') * Q(s', a') - R | equals to R - V
-                rewards = rollout_data.rewards
-                q_value_loss = F.mse_loss(rollout_data.returns, q_values_pred.squeeze() + rewards)
-                # For diffusion policy: take the optimal action as the ground truth
+                # q_value_loss = F.mse_loss(rollout_data.returns, rollout_data.rewards + next_values_pred.squeeze()) # r + V(s') # first nothing to do with policy, but then does - R
+
+                # TEST:
+                # pg_loss.backward()
+                # for param in self.policy.diffusion_policy.parameters(): # diffusion_policy
+                #     print(param.grad)
 
                 # Logging
                 pg_losses.append(pg_loss.item())
-                q_value_losses.append(q_value_loss.item())
+                # q_value_losses.append(q_value_loss.item())
 
-                loss = pg_loss + q_value_loss
+                # loss = pg_loss + q_value_loss
+                loss = pg_loss
 
                 self.policy.optimizer.zero_grad()
                 loss.backward()

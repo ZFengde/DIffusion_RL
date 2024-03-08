@@ -256,8 +256,7 @@ class Q_networks(nn.Module):
 
     def multi_q_min(self, state, action): # 64, 100, 27 | 64, 7
         state = state.unsqueeze(1).expand(-1, self.n_actions, -1)
-        x = th.cat([state, action], dim=-1).float()
-        # TODO, add a probability here 
+        x = th.cat([state, action], dim=-1).float() # avoid overrestimate
         return th.min(self.q1_model(x), self.q2_model(x))
 
     def q1(self, state, action): # multi-actions here
@@ -270,7 +269,10 @@ class Q_networks(nn.Module):
         return th.min(self.q1_model(x), self.q2_model(x))
 
 def select_action(actions, q_values): # 4, 100, 8 | 4, 100, 1
-    action_index = th.argmax(q_values, dim=1).squeeze()
-    selected_actions =  th.stack([actions[i, idx, :] for i, idx in enumerate(action_index)], dim=0).cpu().detach()
+    # could change a action selection method
+    action_index = th.argmax(q_values, dim=1).squeeze() # simply select the aciton with maximum q-value
+    # TODO, should add some explorations
+    # selected_actions = th.stack([actions[i, idx, :] for i, idx in enumerate(action_index)], dim=0).cpu().detach()
+    selected_actions = actions[:, 0, :] # simply choose the first action
     
     return selected_actions

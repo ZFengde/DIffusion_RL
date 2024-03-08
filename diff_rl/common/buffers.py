@@ -14,6 +14,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 class RolloutBufferSamples(NamedTuple):
     observations: th.Tensor
+    next_observations: th.Tensor
     actions: th.Tensor
     old_values: th.Tensor
     advantages: th.Tensor
@@ -134,6 +135,7 @@ class BaseBuffer(ABC):
 class RolloutBuffer(BaseBuffer):
 
     observations: np.ndarray
+    next_observations: np.ndarray
     actions: np.ndarray
     rewards: np.ndarray
     advantages: np.ndarray
@@ -159,6 +161,7 @@ class RolloutBuffer(BaseBuffer):
 
     def reset(self):
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
+        self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -188,6 +191,7 @@ class RolloutBuffer(BaseBuffer):
     def add(
         self,
         obs: np.ndarray, 
+        next_obs: np.ndarray, 
         action: np.ndarray, 
         reward: np.ndarray,  
         episode_start: np.ndarray,
@@ -198,11 +202,12 @@ class RolloutBuffer(BaseBuffer):
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):
             obs = obs.reshape((self.n_envs, *self.obs_shape))
-
+            next_obs = next_obs.reshape((self.n_envs, *self.obs_shape))
         # Reshape to handle multi-dim and discrete action spaces, see GH #970 #1392
         action = action.reshape((self.n_envs, self.action_dim))
 
         self.observations[self.pos] = np.array(obs)
+        self.next_observations[self.pos] = np.array(next_obs)
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.episode_starts[self.pos] = np.array(episode_start)
@@ -218,6 +223,7 @@ class RolloutBuffer(BaseBuffer):
         if not self.generator_ready:
             _tensor_names = [
                 "observations",
+                "next_observations",
                 "actions",
                 "values",
                 "advantages",
@@ -245,6 +251,7 @@ class RolloutBuffer(BaseBuffer):
     ):
         data = (
             self.observations[batch_inds],
+            self.next_observations[batch_inds],
             self.actions[batch_inds],
             self.values[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),

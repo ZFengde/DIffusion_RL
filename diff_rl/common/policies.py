@@ -50,14 +50,14 @@ class Diffusion_ActorCriticPolicy(nn.Module):
         q_values = self.q_networks.multi_q_min(state, clipped_all_actions) # q_values w.r.t each env-state: n_actions and take mean
         # TODO, change values to q_values here, check why values work
         selected_actions = select_action(clipped_all_actions, q_values)
-        values = q_values.mean(dim=1)
+        values = q_values.mean(dim=1) # TODO, here should make values estimation involved with probability
         # selected_actions: actions from all possible actions but with maxium q-value
         # actions: different actions generated w
         # q-values w.r.t. all possible actions
         return selected_actions, clipped_all_actions, values
     
     def value_estimation(self, state): # Multi-actions here, this is for estimating values for a given states, Q(s', a'), should be an average
-        actions = self.diffusion_policy(state) # s, a
+        actions = self.diffusion_policy(state).detach() # s, a, detach make it not back propagation
         values = self.q_networks.multi_q_min(state, actions).mean(dim=1) # q_values w.r.t each env-state: n_actions
         return values
 

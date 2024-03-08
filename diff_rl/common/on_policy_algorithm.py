@@ -108,11 +108,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 actions, all_actions, values = self.policy(obs_tensor)
             actions = actions.cpu().numpy()
 
-            # Rescale and perform action
-            clipped_actions = actions
-
-            new_obs, rewards, dones, infos = env.step(clipped_actions)
-
+            # If done is True, then the new_obs here is s = env.reset
+            new_obs, rewards, dones, infos = env.step(actions)
+            # Here is where reset, if output a done, then new_obs is the env.reset()
+            new_obs_added = new_obs # make new
             self.num_timesteps += env.num_envs
             # Give access to local variables
             callback.update_locals(locals())
@@ -124,7 +123,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             if isinstance(self.action_space, spaces.Discrete):
                 actions = actions.reshape(-1, 1)
-
+            
             for idx, done in enumerate(dones):
                 if (
                     done
@@ -133,17 +132,19 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 ):
                     terminal_obs = obs_as_tensor(infos[idx]["terminal_observation"], self.device).unsqueeze(0)
                     with th.no_grad():
-                        terminal_value = self.policy.value_estimation(terminal_obs)[0]
+                        terminal_value = self.policy.value_estimation(terminal_obs)[0] # terminal_obs = s' or s_T
                     rewards[idx] += self.gamma * terminal_value
+                    new_obs_added[idx] = terminal_obs.cpu().numpy() # If done, then make s' to be the last state
 
             rollout_buffer.add(
-                self._last_obs,  # s
+                self._last_obs, # s
+                new_obs_added, # s'
                 actions, # a
                 rewards, # r
                 self._last_episode_starts,  
                 values # v
             )
-            self._last_obs = new_obs
+            self._last_obs = new_obs # new_obs is for control state input for each step
             self._last_episode_starts = dones
 
         with th.no_grad():
